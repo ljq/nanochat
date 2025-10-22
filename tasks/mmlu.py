@@ -1,5 +1,5 @@
 """
-The MMLU dataset.
+MMLU数据集。
 https://huggingface.co/datasets/cais/mmlu
 """
 
@@ -33,12 +33,12 @@ class MMLU(Task):
 
     def get_example(self, index):
         row = self.ds[index]
-        question = row["question"] # the question text
-        choices = row["choices"] # the text of each choice
-        answer = row["answer"] # index of the answer, e.g. 0,1,2,3 (for A,B,C,D)
-        subject = row["subject"] # e.g. "college_biology", "college_chemistry", etc.
-        assert len(choices) == 4, "MMLU should have 4 choices"
-        # create and return the Conversation object
+        question = row["question"] # 问题文本
+        choices = row["choices"] # 每个选择的文本
+        answer = row["answer"] # 答案的索引，例如0,1,2,3（对应A,B,C,D）
+        subject = row["subject"] # 例如 "college_biology", "college_chemistry"等
+        assert len(choices) == 4, "MMLU应该有4个选择"
+        # 创建并返回Conversation对象
         user_message = render_mc(question, self.letters, choices)
         assistant_message = self.letters[answer]
         messages = [
@@ -47,14 +47,14 @@ class MMLU(Task):
         ]
         conversation = {
             "messages": messages,
-            "subject": subject, # might be useful later for grouping metrics by subject
-            "letters": self.letters, # useful during evaluation, so we can narrow and clamp the assistant prediction to one of the letters
+            "subject": subject, # 稍后可能对按主题分组指标有用
+            "letters": self.letters, # 在评估期间有用，因此我们可以将助手预测缩小并限制为字母之一
         }
         return conversation
 
     def evaluate(self, conversation, assistant_response):
-        # the assert here is not strictly speaking needed, but currently the way we eval, we expect this to be true
-        # I'm going to leave the assert here to prevent footguns, but possibly in the future can remove it.
-        assert assistant_response in self.letters, f"MMLU answer {assistant_response} is expected to be one of {self.letters}"
-        assistant_message = conversation['messages'][-1]['content'] # e.g. "A"
+        # 严格来说这里的断言不是必需的，但目前我们评估的方式，我们期望这是真的
+        # 我将保留此断言以防止误用，但将来可能会删除它。
+        assert assistant_response in self.letters, f"MMLU答案 {assistant_response} 预期是 {self.letters} 之一"
+        assistant_message = conversation['messages'][-1]['content'] # 例如 "A"
         return assistant_response == assistant_message

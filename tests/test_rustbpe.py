@@ -1,21 +1,21 @@
 """
-Comparing the training of:
+比较以下分词器的训练：
 
-1. (very slow) Python reference implementation
-2. Optimized Python implementation
-3. HuggingFace tokenizers training implementation
-4. Our own custom RustBPE training implementation
+1. （非常慢）Python参考实现
+2. 优化的Python实现
+3. HuggingFace分词器训练实现
+4. 我们自己的自定义RustBPE训练实现
 
-All of these should calculate the same merges and produce
-the same vocabulary and tokenizations.
+所有这些都应该计算相同的合并并产生
+相同的词汇表和分词结果。
 
-Finally, for inference we will use tiktoken for efficiency.
-So we want to make sure we can export our rustbpe tokenizer
-into tiktoken and use it for inference with identical results.
+最后，为了效率，我们将使用tiktoken进行推理。
+因此，我们希望确保可以将我们的rustbpe分词器
+导出到tiktoken，并在推理中使用相同的结果。
 
-Run with:
+运行方式：
 python -m pytest tests/test_rustbpe.py -v -s
--v is verbose, -s is show prints
+-v 是详细模式，-s 是显示打印
 """
 
 import regex as re
@@ -32,9 +32,9 @@ GPT4_SPLIT_PATTERN = r"""'(?i:[sdmt]|ll|ve|re)|[^\r\n\p{L}\p{N}]?+\p{L}+|\p{N}{1
 
 def get_stats(ids, counts=None):
     """
-    Given a list of integers, return a dictionary of counts of consecutive pairs
-    Example: [1, 2, 3, 1, 2] -> {(1, 2): 2, (2, 3): 1, (3, 1): 1}
-    Optionally allows to update an existing dictionary of counts
+    给定一个整数列表，返回连续对的计数字典
+    示例：[1, 2, 3, 1, 2] -> {(1, 2): 2, (2, 3): 1, (3, 1): 1}
+    可选地允许更新现有的计数字典
     """
     counts = {} if counts is None else counts
     for pair in zip(ids, ids[1:]): # iterate consecutive elements
@@ -43,9 +43,9 @@ def get_stats(ids, counts=None):
 
 def merge(ids, pair, idx):
     """
-    In the list of integers (ids), replace all consecutive occurrences
-    of pair with the new integer token idx
-    Example: ids=[1, 2, 3, 1, 2], pair=(1, 2), idx=4 -> [4, 3, 4]
+    在整数列表（ids）中，将所有连续出现的
+    对替换为新的整数token idx
+    示例：ids=[1, 2, 3, 1, 2], pair=(1, 2), idx=4 -> [4, 3, 4]
     """
     newids = []
     i = 0
@@ -60,12 +60,13 @@ def merge(ids, pair, idx):
     return newids
 
 class RegexTokenizer:
+    """基于正则表达式的分词器参考实现"""
 
     def __init__(self, pattern=None):
         """
-        - pattern: optional string to override the default (GPT-4 split pattern)
-        - special_tokens: str -> int dictionary of special tokens
-          example: {'<|endoftext|>': 100257}
+        - pattern: 可选字符串，用于覆盖默认值（GPT-4分割模式）
+        - special_tokens: str -> int 特殊token字典
+          示例：{'<|endoftext|>': 100257}
         """
         self.pattern = GPT4_SPLIT_PATTERN if pattern is None else pattern
         self.merges = {} # (int, int) -> int
@@ -75,7 +76,7 @@ class RegexTokenizer:
         self.vocab = self._build_vocab()
 
     def _build_vocab(self):
-        # vocab is simply and deterministically derived from merges
+        """词汇表简单且确定性地从合并中派生"""
         vocab = {idx: bytes([idx]) for idx in range(256)}
         for (p0, p1), idx in self.merges.items():
             vocab[idx] = vocab[p0] + vocab[p1]
@@ -84,81 +85,82 @@ class RegexTokenizer:
         return vocab
 
     def train(self, text, vocab_size, verbose=False):
+        """训练分词器"""
         assert vocab_size >= 256
         num_merges = vocab_size - 256
 
-        # keep track of whether at any point during training the merge is ambiguous (counts of pairs are not unique)
+        # 跟踪训练期间合并是否在任何时候是模糊的（对的计数不唯一）
         ambiguous = False
 
-        # split the text up into text chunks
+        # 将文本分割成文本块
         text_chunks = re.findall(self.compiled_pattern, text)
 
-        # input text preprocessing
+        # 输入文本预处理
         ids = [list(ch.encode("utf-8")) for ch in text_chunks]
 
-        # iteratively merge the most common pairs to create new tokens
+        # 迭代合并最常见的对以创建新token
         merges = {} # (int, int) -> int
         vocab = {idx: bytes([idx]) for idx in range(256)} # idx -> bytes
         for i in range(num_merges):
-            # count the number of times every consecutive pair appears
+            # 计算每个连续对出现的次数
             stats = {}
             for chunk_ids in ids:
-                # passing in stats will update it in place, adding up counts
+                # 传入stats将在原地更新它，累加计数
                 get_stats(chunk_ids, stats)
-            # find the pair with the highest count
+            # 找到计数最高的对
             pair = max(stats, key=stats.get)
-            # check if the merge is ambiguous - i.e. the max value is not unique
+            # 检查合并是否模糊 - 即最大值不唯一
             pair_count = stats[pair]
             pairs_with_max_count = [pair for pair, count in stats.items() if count == pair_count]
             if len(pairs_with_max_count) > 1:
-                # print the top 10 pairs with their counts
+                # 打印前10对及其计数
                 # print(f"{i} Merge is ambiguous! {pair} has {pair_count} occurrences")
                 # for print_pair, print_count in sorted(stats.items(), key=lambda x: x[1], reverse=True)[:10]:
                 #     print(f"{print_pair}: {print_count}")
                 ambiguous = True
-            # mint a new token: assign it the next available id
+            # 创建一个新token：分配下一个可用的id
             idx = 256 + i
-            # replace all occurrences of pair in ids with idx
+            # 将ids中所有出现的对替换为idx
             ids = [merge(chunk_ids, pair, idx) for chunk_ids in ids]
-            # save the merge
+            # 保存合并
             merges[pair] = idx
             vocab[idx] = vocab[pair[0]] + vocab[pair[1]]
-            # prints
+            # 打印
             if verbose:
-                print(f"merge {i+1}/{num_merges}: {pair} -> {idx} ({vocab[idx]}) had {stats[pair]} occurrences")
+                print(f"合并 {i+1}/{num_merges}: {pair} -> {idx} ({vocab[idx]}) 有 {stats[pair]} 次出现")
 
-        # save class variables
-        self.merges = merges # used in encode()
-        self.vocab = vocab   # used in decode()
+        # 保存类变量
+        self.merges = merges # 在encode()中使用
+        self.vocab = vocab   # 在decode()中使用
         return ambiguous
 
     def _encode_chunk(self, text_bytes):
-        # return the token ids
-        # let's begin. first, convert all bytes to integers in range 0..255
+        """返回token id"""
+        # 开始。首先，将所有字节转换为0..255范围内的整数
         ids = list(text_bytes)
         while len(ids) >= 2:
-            # find the pair with the lowest merge index
+            # 找到合并索引最低的对
             stats = get_stats(ids)
             pair = min(stats, key=lambda p: self.merges.get(p, float("inf")))
-            # subtle: if there are no more merges available, the key will
-            # result in an inf for every single pair, and the min will be
-            # just the first pair in the list, arbitrarily
-            # we can detect this terminating case by a membership check
+            # 微妙之处：如果没有更多可用的合并，键将为
+            # 每个对产生inf，而min将是
+            # 列表中的第一个对，任意地
+            # 我们可以通过成员资格检查来检测这个终止情况
             if pair not in self.merges:
-                break # nothing else can be merged anymore
-            # otherwise let's merge the best pair (lowest merge index)
+                break # 没有其他可以合并的了
+            # 否则让我们合并最佳对（最低合并索引）
             idx = self.merges[pair]
             ids = merge(ids, pair, idx)
         return ids
 
     def encode_ordinary(self, text):
-        """Encoding that ignores any special tokens."""
-        # split text into chunks of text by categories defined in regex pattern
+        """忽略任何特殊token的编码。"""
+        # 根据正则表达式模式定义的类别将文本分割成文本块
         text_chunks = re.findall(self.compiled_pattern, text)
-        # all chunks of text are encoded separately, then results are joined
+        # 所有文本块分别编码，然后结果连接
         ids = []
         for chunk in text_chunks:
-            chunk_bytes = chunk.encode("utf-8") # raw bytes
+            chunk_bytes = chunk.encode("utf-8") # 原始字节
             chunk_ids = self._encode_chunk(chunk_bytes)
             ids.extend(chunk_ids)
         return ids
@@ -168,9 +170,9 @@ class RegexTokenizer:
 
 def fast_merge_inplace(ids, pair, idx):
     """
-    In the list of integers (ids), replace all consecutive occurrences
-    of pair with the new integer token idx in place
-    Example: ids=[1, 2, 3, 1, 2], pair=(1, 2), idx=4 -> [4, 3, 4]
+    在整数列表（ids）中，将所有连续出现的
+    对替换为新的整数token idx（原地操作）
+    示例：ids=[1, 2, 3, 1, 2], pair=(1, 2), idx=4 -> [4, 3, 4]
     """
     # Find all positions where the pair occurs
     i = 0
@@ -184,12 +186,13 @@ def fast_merge_inplace(ids, pair, idx):
 
 
 class FastRegexTokenizer:
+    """优化的基于正则表达式的分词器"""
 
     def __init__(self, pattern=None):
         """
-        - pattern: optional string to override the default (GPT-4 split pattern)
-        - special_tokens: str -> int dictionary of special tokens
-          example: {'<|endoftext|>': 100257}
+        - pattern: 可选字符串，用于覆盖默认值（GPT-4分割模式）
+        - special_tokens: str -> int 特殊token字典
+          示例：{'<|endoftext|>': 100257}
         """
         self.pattern = GPT4_SPLIT_PATTERN if pattern is None else pattern
         self.compiled_pattern = re.compile(self.pattern)
@@ -199,7 +202,7 @@ class FastRegexTokenizer:
         self.vocab = self._build_vocab()
 
     def _build_vocab(self):
-        # vocab is simply and deterministically derived from merges
+        """词汇表简单且确定性地从合并中派生"""
         vocab = {idx: bytes([idx]) for idx in range(256)}
         for (p0, p1), idx in self.merges.items():
             vocab[idx] = vocab[p0] + vocab[p1]
@@ -209,11 +212,11 @@ class FastRegexTokenizer:
 
     def train(self, text, vocab_size, verbose=False):
         """
-        A number of optimizations are introduced:
-        - delete function call overhead by inlining functions
-        - modifying list of ids in place with .pop() instead of creating a new list
-        - collapse identical chunks to just the unique ones
-        - update counts more cleverly - only around the affected chunks
+        引入了许多优化：
+        - 通过内联函数删除函数调用开销
+        - 使用.pop()原地修改ids列表而不是创建新列表
+        - 将相同的块折叠为唯一的块
+        - 更聪明地更新计数 - 仅围绕受影响的块
         """
         assert vocab_size >= 256
         num_merges = vocab_size - 256
@@ -322,13 +325,14 @@ class FastRegexTokenizer:
         self.vocab = vocab   # used in decode()
 
     def register_special_tokens(self, special_tokens):
-        # special_tokens is a dictionary of str -> int
-        # example: {"<|endoftext|>": 100257}
+        """注册特殊token"""
+        # special_tokens 是一个 str -> int 的字典
+        # 示例：{"<|endoftext|>": 100257}
         self.special_tokens = special_tokens
         self.inverse_special_tokens = {v: k for k, v in special_tokens.items()}
 
     def decode(self, ids):
-        # given ids (list of integers), return Python string
+        """给定ids（整数列表），返回Python字符串"""
         part_bytes = []
         for idx in ids:
             if idx in self.vocab:
@@ -342,32 +346,32 @@ class FastRegexTokenizer:
         return text
 
     def _encode_chunk(self, text_bytes):
-        # return the token ids
-        # let's begin. first, convert all bytes to integers in range 0..255
+        """返回token id"""
+        # 开始。首先，将所有字节转换为0..255范围内的整数
         ids = list(text_bytes)
         while len(ids) >= 2:
-            # find the pair with the lowest merge index
+            # 找到合并索引最低的对
             stats = get_stats(ids)
             pair = min(stats, key=lambda p: self.merges.get(p, float("inf")))
-            # subtle: if there are no more merges available, the key will
-            # result in an inf for every single pair, and the min will be
-            # just the first pair in the list, arbitrarily
-            # we can detect this terminating case by a membership check
+            # 微妙之处：如果没有更多可用的合并，键将为
+            # 每个对产生inf，而min将是
+            # 列表中的第一个对，任意地
+            # 我们可以通过成员资格检查来检测这个终止情况
             if pair not in self.merges:
-                break # nothing else can be merged anymore
-            # otherwise let's merge the best pair (lowest merge index)
+                break # 没有其他可以合并的了
+            # 否则让我们合并最佳对（最低合并索引）
             idx = self.merges[pair]
             ids = fast_merge_inplace(ids, pair, idx)
         return ids
 
     def encode_ordinary(self, text):
-        """Encoding that ignores any special tokens."""
-        # split text into chunks of text by categories defined in regex pattern
+        """忽略任何特殊token的编码。"""
+        # 根据正则表达式模式定义的类别将文本分割成文本块
         text_chunks = re.findall(self.compiled_pattern, text)
-        # all chunks of text are encoded separately, then results are joined
+        # 所有文本块分别编码，然后结果连接
         ids = []
         for chunk in text_chunks:
-            chunk_bytes = chunk.encode("utf-8") # raw bytes
+            chunk_bytes = chunk.encode("utf-8") # 原始字节
             chunk_ids = self._encode_chunk(chunk_bytes)
             ids.extend(chunk_ids)
         return ids
@@ -380,45 +384,46 @@ from tokenizers.models import BPE
 from tokenizers.trainers import BpeTrainer
 
 class HuggingFaceTokenizer:
-    """Light wrapper around HuggingFace Tokenizer for some utilities"""
+    """HuggingFace分词器的轻量包装器，用于一些实用功能"""
 
     def __init__(self, tokenizer):
         self.tokenizer = tokenizer
 
     @classmethod
     def train_from_iterator(cls, text_iterator, vocab_size):
-        # train from an iterator of text
-        # Configure the HuggingFace Tokenizer
+        """从文本迭代器训练"""
+        # 配置HuggingFace分词器
         tokenizer = HFTokenizer(BPE(
-            byte_fallback=True, # needed!
+            byte_fallback=True, # 需要！
             unk_token=None,
             fuse_unk=False,
         ))
-        # Normalizer: None
+        # 标准化器：无
         tokenizer.normalizer = None
-        # Pre-tokenizer: GPT-4 style
-        gpt4_split_regex = Regex(GPT4_SPLIT_PATTERN) # huggingface demands that you wrap it in Regex!!
+        # 预分词器：GPT-4风格
+        gpt4_split_regex = Regex(GPT4_SPLIT_PATTERN) # huggingface要求你将其包装在Regex中！！
         tokenizer.pre_tokenizer = pre_tokenizers.Sequence([
             pre_tokenizers.Split(pattern=gpt4_split_regex, behavior="isolated", invert=False),
             pre_tokenizers.ByteLevel(add_prefix_space=False, use_regex=False)
         ])
-        # Decoder: ByteLevel (it pairs together with the ByteLevel pre-tokenizer)
+        # 解码器：ByteLevel（它与ByteLevel预分词器配对）
         tokenizer.decoder = decoders.ByteLevel()
-        # Post-processor: None
+        # 后处理器：无
         tokenizer.post_processor = None
-        # Trainer: BPE
+        # 训练器：BPE
         trainer = BpeTrainer(
             vocab_size=vocab_size,
             show_progress=True,
-            min_frequency=0, # no minimum frequency
+            min_frequency=0, # 无最小频率
             initial_alphabet=pre_tokenizers.ByteLevel.alphabet(),
-            special_tokens=[], # no special tokens
+            special_tokens=[], # 无特殊token
         )
-        # Kick off the training
+        # 开始训练
         tokenizer.train_from_iterator(text_iterator, trainer)
         return cls(tokenizer)
 
     def encode_ordinary(self, text):
+        """忽略任何特殊token的编码。"""
         ids = self.tokenizer.encode(text, add_special_tokens=False).ids
         return ids
 
@@ -427,7 +432,7 @@ class HuggingFaceTokenizer:
 
 @pytest.fixture(scope="module")
 def enwik8_path():
-    """Fixture to download and cache enwik8 dataset."""
+    """下载并缓存enwik8数据集的fixture。"""
     import os
     import zipfile
     from nanochat.common import get_base_dir
@@ -454,18 +459,18 @@ def enwik8_path():
 
 @pytest.fixture(scope="module")
 def enwik8_small(enwik8_path):
-    """Fixture providing 100KB of enwik8 for quick tests."""
+    """提供100KB enwik8用于快速测试的fixture。"""
     with open(enwik8_path, "r") as f:
         return f.read(100_000)
 
 @pytest.fixture(scope="module")
 def enwik8_large(enwik8_path):
-    """Fixture providing 10MB of enwik8 for performance tests."""
+    """提供10MB enwik8用于性能测试的fixture。"""
     with open(enwik8_path, "r") as f:
         return f.read(10**7)
 
 def time_function(func, *args, **kwargs):
-    """Time a function call and return the result and elapsed time"""
+    """计时函数调用并返回结果和经过的时间"""
     start_time = time.time()
     result = func(*args, **kwargs)
     end_time = time.time()
@@ -473,7 +478,7 @@ def time_function(func, *args, **kwargs):
     return result, elapsed
 
 def test_correctness(enwik8_small):
-    """Test that all tokenizer implementations produce the same results."""
+    """测试所有分词器实现产生相同的结果。"""
     text = enwik8_small
     encode_text = text
     vocab_size = 256 + 20  # 20 merges
@@ -514,8 +519,9 @@ def test_correctness(enwik8_small):
     print(f"HuggingFace encode time: {hf_encode_time:.4f}s")
     print(hf_ids[:20])
 
-    # HuggingFace has a different byte order, so we need custom matching
+    # HuggingFace有不同的字节顺序，所以我们需要自定义匹配
     def custom_match(ids1, ids2):
+        """自定义匹配函数，处理HuggingFace的字节顺序差异"""
         perm = {}
         for x, y in zip(ids1, ids2):
             if x < 256:
@@ -563,7 +569,7 @@ def test_correctness(enwik8_small):
 
 @pytest.mark.slow
 def test_training_performance(enwik8_large):
-    """Use a bigger dataset and compare the training speed of the optimized tokenizers (Python, Rust, HuggingFace)."""
+    """使用更大的数据集比较优化分词器（Python、Rust、HuggingFace）的训练速度。"""
     text = enwik8_large
     vocab_size = 2048
     print(f"\nText length: {len(text)}")
@@ -595,7 +601,7 @@ def test_training_performance(enwik8_large):
     print(f"   Speedup: {hf_train_time/rustbpe_train_time:.2f}x")
 
 def test_interface(enwik8_small):
-    """Test the RustBPETokenizer interface for training, encoding, decoding, and serialization."""
+    """测试RustBPETokenizer接口的训练、编码、解码和序列化功能。"""
     import tempfile
     from nanochat.tokenizer import RustBPETokenizer
 

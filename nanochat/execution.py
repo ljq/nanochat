@@ -1,24 +1,24 @@
 """
-Sandboxed execution utilities for running Python code that comes out of an LLM.
-Adapted from OpenAI HumanEval code:
+用于运行来自LLM的Python代码的沙盒执行工具。
+改编自OpenAI HumanEval代码：
 https://github.com/openai/human-eval/blob/master/human_eval/execution.py
 
-What is covered:
-- Each execution runs in its own process (can be killed if it hangs or crashes)
-- Execution is limited by a timeout to stop infinite loops
-- Memory limits are enforced by default (256MB)
-- stdout and stderr are captured and returned
-- Code runs in a temporary directory that is deleted afterwards
-- Dangerous functions are disabled (examples: os.system, os.kill, shutil.rmtree, subprocess.Popen)
+涵盖的内容：
+- 每次执行都在自己的进程中运行（如果挂起或崩溃可以被杀死）
+- 执行受超时限制以停止无限循环
+- 默认强制执行内存限制（256MB）
+- 捕获并返回stdout和stderr
+- 代码在临时目录中运行，之后被删除
+- 禁用危险函数（例如：os.system、os.kill、shutil.rmtree、subprocess.Popen）
 
-What is not covered:
-- Not a true security sandbox
-- Network access is not blocked (e.g. sockets could be opened)
-- Python's dynamic features (e.g. ctypes) could bypass restrictions
-- No kernel-level isolation (no seccomp, no containers, no virtualization)
+未涵盖的内容：
+- 不是真正的安全沙盒
+- 未阻止网络访问（例如可以打开套接字）
+- Python的动态特性（例如ctypes）可能绕过限制
+- 没有内核级隔离（没有seccomp、没有容器、没有虚拟化）
 
-Overall this sandbox is good for evaluation of generated code and protects against
-accidental destructive behavior, but it is not safe against malicious adversarial code.
+总的来说，这个沙盒对于评估生成的代码很好，可以防止
+意外的破坏性行为，但对于恶意的对抗性代码并不安全。
 """
 
 import contextlib
@@ -36,7 +36,7 @@ from typing import Optional
 
 @dataclass
 class ExecutionResult:
-    """Result of executing Python code in a sandbox."""
+    """在沙盒中执行Python代码的结果。"""
     success: bool
     stdout: str
     stderr: str
@@ -63,8 +63,9 @@ class ExecutionResult:
 
 @contextlib.contextmanager
 def time_limit(seconds: float):
+    """时间限制上下文管理器，用于设置执行超时"""
     def signal_handler(signum, frame):
-        raise TimeoutException("Timed out!")
+        raise TimeoutException("超时！")
 
     signal.setitimer(signal.ITIMER_REAL, seconds)
     signal.signal(signal.SIGALRM, signal_handler)
@@ -76,7 +77,7 @@ def time_limit(seconds: float):
 
 @contextlib.contextmanager
 def capture_io():
-    """Capture stdout and stderr, and disable stdin."""
+    """捕获stdout和stderr，并禁用stdin。"""
     stdout_capture = io.StringIO()
     stderr_capture = io.StringIO()
     stdin_block = WriteOnlyStringIO()
@@ -88,17 +89,19 @@ def capture_io():
 
 @contextlib.contextmanager
 def create_tempdir():
+    """创建临时目录的上下文管理器"""
     with tempfile.TemporaryDirectory() as dirname:
         with chdir(dirname):
             yield dirname
 
 
 class TimeoutException(Exception):
+    """超时异常"""
     pass
 
 
 class WriteOnlyStringIO(io.StringIO):
-    """StringIO that throws an exception when it's read from"""
+    """只写StringIO，当被读取时会抛出异常"""
 
     def read(self, *args, **kwargs):
         raise IOError
@@ -110,16 +113,18 @@ class WriteOnlyStringIO(io.StringIO):
         raise IOError
 
     def readable(self, *args, **kwargs):
-        """Returns True if the IO object can be read."""
+        """如果IO对象可读则返回True。"""
         return False
 
 
 class redirect_stdin(contextlib._RedirectStream):  # type: ignore
+    """重定向stdin的上下文管理器"""
     _stream = "stdin"
 
 
 @contextlib.contextmanager
 def chdir(root):
+    """更改当前工作目录的上下文管理器"""
     if root == ".":
         yield
         return
@@ -135,15 +140,15 @@ def chdir(root):
 
 def reliability_guard(maximum_memory_bytes: Optional[int] = None):
     """
-    This disables various destructive functions and prevents the generated code
-    from interfering with the test (e.g. fork bomb, killing other processes,
-    removing filesystem files, etc.)
+    这禁用了各种破坏性函数，防止生成的代码
+    干扰测试（例如fork炸弹、杀死其他进程、
+    删除文件系统文件等）。
 
-    WARNING
-    This function is NOT a security sandbox. Untrusted code, including, model-
-    generated code, should not be blindly executed outside of one. See the
-    Codex paper for more information about OpenAI's code sandbox, and proceed
-    with caution.
+    警告
+    此函数不是安全沙盒。不受信任的代码，包括模型
+    生成的代码，不应在沙盒之外盲目执行。请参阅
+    Codex论文以获取有关OpenAI代码沙盒的更多信息，并
+    谨慎进行。
     """
 
     if maximum_memory_bytes is not None:
@@ -215,10 +220,10 @@ def reliability_guard(maximum_memory_bytes: Optional[int] = None):
 
 
 def _unsafe_execute(code: str, timeout: float, maximum_memory_bytes: Optional[int], result_dict):
-    """Execute code in a subprocess with safety guards. Results are written to result_dict."""
+    """在子进程中执行代码，带有安全防护。结果写入result_dict。"""
     with create_tempdir():
 
-        # These system calls are needed when cleaning up tempdir.
+        # 清理临时目录时需要这些系统调用。
         import os
         import shutil
 
@@ -226,10 +231,10 @@ def _unsafe_execute(code: str, timeout: float, maximum_memory_bytes: Optional[in
         rmdir = os.rmdir
         chdir = os.chdir
 
-        # Disable functionalities that can make destructive changes to the test.
+        # 禁用可能对测试造成破坏性更改的功能。
         reliability_guard(maximum_memory_bytes=maximum_memory_bytes)
 
-        # Default to failure
+        # 默认为失败
         result_dict.update({
             "success": False,
             "stdout": "",
@@ -243,16 +248,16 @@ def _unsafe_execute(code: str, timeout: float, maximum_memory_bytes: Optional[in
             exec_globals = {}
             with capture_io() as (stdout_capture, stderr_capture):
                 with time_limit(timeout):
-                    # WARNING
-                    # This program exists to execute untrusted model-generated code. Although
-                    # it is highly unlikely that model-generated code will do something overtly
-                    # malicious in response to this test suite, model-generated code may act
-                    # destructively due to a lack of model capability or alignment.
-                    # Users are strongly encouraged to sandbox this evaluation suite so that it
-                    # does not perform destructive actions on their host or network. For more
-                    # information on how OpenAI sandboxes its code, see the accompanying paper.
-                    # Once you have read this disclaimer and taken appropriate precautions,
-                    # uncomment the following line and proceed at your own risk:
+                    # 警告
+                    # 此程序用于执行不受信任的模型生成代码。虽然
+                    # 模型生成的代码对此测试套件做出明显恶意行为的可能性很小，
+                    # 但由于模型能力或对齐不足，模型生成的代码可能
+                    # 会采取破坏性行为。
+                    # 强烈建议用户将此评估套件沙盒化，使其
+                    # 不会在其主机或网络上执行破坏性操作。有关
+                    # OpenAI如何沙盒化其代码的更多信息，请参阅随附的论文。
+                    # 一旦您阅读了此免责声明并采取了适当的预防措施，
+                    # 请取消注释以下行并自行承担风险：
                     exec(code, exec_globals)
 
             result_dict.update({
@@ -286,21 +291,21 @@ def _unsafe_execute(code: str, timeout: float, maximum_memory_bytes: Optional[in
 
 def execute_code(
     code: str,
-    timeout: float = 5.0, # 5 seconds default
-    maximum_memory_bytes: Optional[int] = 256 * 1024 * 1024, # 256MB default
+    timeout: float = 5.0, # 5秒默认值
+    maximum_memory_bytes: Optional[int] = 256 * 1024 * 1024, # 256MB默认值
 ) -> ExecutionResult:
     """
-    Execute Python code in a sandboxed environment.
+    在沙盒环境中执行Python代码。
 
-    Args:
-        code: Python code to execute as a string
-        timeout: Maximum execution time in seconds (default: 5.0)
-        maximum_memory_bytes: Memory limit in bytes (default: 256MB, None to disable)
+    参数：
+        code: 要执行的Python代码字符串
+        timeout: 最大执行时间（秒）（默认：5.0）
+        maximum_memory_bytes: 内存限制（字节）（默认：256MB，None表示禁用）
 
-    Returns:
-        ExecutionResult with success status, stdout/stderr, and error information
+    返回：
+        ExecutionResult，包含成功状态、stdout/stderr和错误信息
 
-    Example:
+    示例：
         >>> result = execute_code("print('hello world')")
         >>> result.success
         True
@@ -347,4 +352,3 @@ def execute_code(
         timeout=result_dict["timeout"],
         memory_exceeded=result_dict["memory_exceeded"],
     )
-

@@ -1,14 +1,14 @@
 """
-Engine for efficient inference of our models.
+用于高效推理我们模型的引擎。
 
-Everything works around token sequences:
-- The user can send token sequences to the engine
-- The engine returns the next token
+一切都围绕token序列工作：
+- 用户可以发送token序列到引擎
+- 引擎返回下一个token
 
-Notes:
-- The engine knows nothing about tokenization, it's purely token id sequences.
+注意：
+- 引擎对标记化一无所知，它纯粹是token id序列。
 
-The whole thing is made as efficient as possible.
+整个系统尽可能高效地实现。
 """
 
 import torch
@@ -44,7 +44,7 @@ def eval_with_timeout(formula, max_time=3):
         return None
 
 def use_calculator(expr):
-    """Evaluate a math expression safely."""
+    """安全地评估数学表达式。"""
     expr = expr.replace(",", "")
     if any([x not in "0123456789*+-/.() " for x in expr]): # for now disallow non-numeric chars
         return None
@@ -55,8 +55,8 @@ def use_calculator(expr):
 # -----------------------------------------------------------------------------
 class KVCache:
     """
-    Works hand-in-hand with the GPT model to maintain the KV cache.
-    Note that the .pos advances automatically after the last layer of the Transformer inserts.
+    与GPT模型协同工作以维护KV缓存。
+    注意：.pos在Transformer最后一层插入后自动前进。
     """
 
     def __init__(self, batch_size, num_heads, seq_len, head_dim, num_layers):
@@ -73,52 +73,51 @@ class KVCache:
 
     def prefill(self, other):
         """
-        Prefill given another KV cache. Optionally expand along batch dim.
-        This is used when we do batch 1 prefill and then want to generate
-        multiple samples in parallel from there.
+        使用另一个KV缓存进行预填充。可选地沿批次维度扩展。
+        当我们进行批次1预填充然后想要从中并行生成多个样本时使用。
         """
-        # 1) validate the shapes
-        assert self.kv_cache is None, "Cannot prefill a non-empty KV cache"
-        assert other.kv_cache is not None, "Cannot prefill with a None KV cache"
+        # 1) 验证形状
+        assert self.kv_cache is None, "无法预填充非空KV缓存"
+        assert other.kv_cache is not None, "无法使用None KV缓存进行预填充"
         for ix, (dim1, dim2) in enumerate(zip(self.kv_shape, other.kv_shape)):
             if ix in [0, 1, 3, 5]:
-                # num_layers, batch_size, num_heads, head_dim must match
-                assert dim1 == dim2, f"Batch dim mismatch: {dim1} != {dim2}"
+                # num_layers、batch_size、num_heads、head_dim必须匹配
+                assert dim1 == dim2, f"批次维度不匹配: {dim1} != {dim2}"
             elif ix == 2:
-                # batch_size can be expanded
-                assert dim1 == dim2 or dim2 == 1, f"Batch dim mismatch: {dim1} != {dim2}"
+                # batch_size可以扩展
+                assert dim1 == dim2 or dim2 == 1, f"批次维度不匹配: {dim1} != {dim2}"
             elif ix == 4:
-                # seq_len: self must be longer than other
-                assert dim1 >= dim2, f"Seq len mismatch: {dim1} < {dim2}"
-        # 2) initialize the cache
+                # seq_len：self必须比other长
+                assert dim1 >= dim2, f"序列长度不匹配: {dim1} < {dim2}"
+        # 2) 初始化缓存
         dtype, device = other.kv_cache.dtype, other.kv_cache.device
         self.kv_cache = torch.empty(self.kv_shape, dtype=dtype, device=device)
-        # 3) copy the data over
+        # 3) 复制数据
         self.kv_cache[:, :, :, :, :other.pos, :] = other.kv_cache
-        # 4) update the pos
+        # 4) 更新pos
         self.pos = other.pos
 
     def insert_kv(self, layer_idx, k, v):
-        # Lazy initialize the cache here because we need to know the dtype/device
+        # 在这里延迟初始化缓存，因为我们需要知道dtype/device
         if self.kv_cache is None:
             self.kv_cache = torch.empty(self.kv_shape, dtype=k.dtype, device=k.device)
-        # Insert new keys/values to the cache and return the full cache so far
+        # 将新的键/值插入缓存并返回到目前为止的完整缓存
         B, H, T_add, D = k.size()
         t0, t1 = self.pos, self.pos + T_add
-        # Dynamically grow the cache if needed
+        # 如果需要，动态增长缓存
         if t1 > self.kv_cache.size(4):
-            t_needed = t1 + 1024 # as much as we need plus buffer of 1024
-            t_needed = (t_needed + 1023) & ~1023 # then round up to the nearest multiple of 1024
+            t_needed = t1 + 1024 # 我们需要的大小加上1024的缓冲区
+            t_needed = (t_needed + 1023) & ~1023 # 然后向上取整到1024的最近倍数
             current_shape = list(self.kv_cache.shape)
             current_shape[4] = t_needed
             self.kv_cache.resize_(current_shape)
-        # Insert k, v into the cache
+        # 将k、v插入缓存
         self.kv_cache[layer_idx, 0, :, :, t0:t1] = k
         self.kv_cache[layer_idx, 1, :, :, t0:t1] = v
-        # Return the full cached keys/values up to current position (as a view)
+        # 返回到当前位置的完整缓存键/值（作为视图）
         key_view = self.kv_cache[layer_idx, 0, :, :, :t1]
         value_view = self.kv_cache[layer_idx, 1, :, :, :t1]
-        # Increment pos after the last layer of the Transformer processes
+        # 在Transformer最后一层处理后递增pos
         if layer_idx == self.kv_cache.size(0) - 1:
             self.pos = t1
         return key_view, value_view
@@ -127,7 +126,7 @@ class KVCache:
 # -----------------------------------------------------------------------------
 @torch.inference_mode()
 def sample_next_token(logits, rng, temperature=1.0, top_k=None):
-    """Sample a single next token from given logits of shape (B, vocab_size). Returns (B, 1)."""
+    """从给定形状为(B, vocab_size)的logits中采样单个下一个token。返回(B, 1)。"""
     assert temperature >= 0.0, "temperature must be non-negative"
     if temperature == 0.0:
         return torch.argmax(logits, dim=-1, keepdim=True)
@@ -146,13 +145,13 @@ def sample_next_token(logits, rng, temperature=1.0, top_k=None):
 # -----------------------------------------------------------------------------
 
 class RowState:
-    # Per-row state tracking during generation
+    # 生成期间每行状态跟踪
     def __init__(self, current_tokens=None):
-        self.current_tokens = current_tokens or [] # Current token sequence for this row
-        self.forced_tokens = deque() # Queue of tokens to force inject
-        self.in_python_block = False # Whether we are inside a python block
-        self.python_expr_tokens = [] # Tokens of the current python expression
-        self.completed = False # Whether this row has completed generation
+        self.current_tokens = current_tokens or [] # 此行的当前token序列
+        self.forced_tokens = deque() # 要强制注入的token队列
+        self.in_python_block = False # 我们是否在python块内
+        self.python_expr_tokens = [] # 当前python表达式的token
+        self.completed = False # 此行是否已完成生成
 
 class Engine:
 
@@ -162,22 +161,22 @@ class Engine:
 
     @torch.inference_mode()
     def generate(self, tokens, num_samples=1, max_tokens=None, temperature=1.0, top_k=None, seed=42):
-        """Same as generate, but does single prefill and then clones the KV cache."""
+        """与generate相同，但执行单次预填充然后克隆KV缓存。"""
         assert isinstance(tokens, list) and isinstance(tokens[0], int), "expecting list of ints"
         device = self.model.get_device()
         rng = torch.Generator(device=device)
         rng.manual_seed(seed)
 
-        # Get the special tokens we need to coordinate the tool use state machine
+        # 获取我们需要协调工具使用状态机的特殊token
         get_special = lambda s: self.tokenizer.encode_special(s)
         python_start = get_special("<|python_start|>")
         python_end = get_special("<|python_end|>")
         output_start = get_special("<|output_start|>")
         output_end = get_special("<|output_end|>")
-        assistant_end = get_special("<|assistant_end|>") # if sampled, ends row
-        bos = self.tokenizer.get_bos_token_id() # if sampled, ends row
+        assistant_end = get_special("<|assistant_end|>") # 如果采样到，结束行
+        bos = self.tokenizer.get_bos_token_id() # 如果采样到，结束行
 
-        # 1) Run a batch 1 prefill of the prompt tokens
+        # 1) 运行批次1的提示token预填充
         m = self.model.config
         kv_model_kwargs = {"num_heads": m.n_kv_head, "head_dim": m.n_embd // m.n_head, "num_layers": m.n_layer}
         kv_cache_prefill = KVCache(
@@ -191,7 +190,7 @@ class Engine:
         next_ids = sample_next_token(logits, rng, temperature, top_k)  # (B, 1)
         sampled_tokens = next_ids[:, 0].tolist()
 
-        # 2) Replicate the KV cache for each sample/row
+        # 2) 为每个样本/行复制KV缓存
         kv_length_hint = (len(tokens) + max_tokens) if max_tokens is not None else self.model.config.sequence_len
         kv_cache_decode = KVCache(
             batch_size=num_samples,
@@ -199,78 +198,32 @@ class Engine:
             **kv_model_kwargs,
         )
         kv_cache_decode.prefill(kv_cache_prefill)
-        del kv_cache_prefill # no need to keep this memory around
+        del kv_cache_prefill # 不需要保留此内存
 
-        # 3) Initialize states for each sample
+        # 3) 为每个样本初始化状态
         row_states = [RowState(tokens.copy()) for _ in range(num_samples)]
 
-        # 4) Main generation loop
+        # 4) 主生成循环
         num_generated = 0
         first_iteration = True
         while True:
-            # Stop condition: we've reached max tokens
+            # 停止条件：我们已达到最大token数
             if max_tokens is not None and num_generated >= max_tokens:
                 break
-            # Stop condition: all rows are completed
+            # 停止条件：所有行都已完成
             if all(state.completed for state in row_states):
                 break
 
-            # Get sampled tokens - either from prefill or from forward pass
+            # 获取采样的token - 要么来自预填充，要么来自前向传递
             if first_iteration:
-                # Use the tokens we already sampled from prefill
-                sampled_tokens = [sampled_tokens[0]] * num_samples  # Broadcast first token to all rows
-                # TODO: we should sample a token for each row instead of broadcasting
-                first_iteration = False
-            else:
-                # Forward the model and get the next token for each row
-                logits = self.model.forward(ids, kv_cache=kv_cache_decode)  # (B, T, vocab_size)
-                logits = logits[:, -1, :]  # (B, vocab_size) at last time step
-                next_ids = sample_next_token(logits, rng, temperature, top_k)  # (B, 1)
-                sampled_tokens = next_ids[:, 0].tolist()
-
-            # Process each row: choose the next token, update state, optional tool use
-            token_column = [] # contains the next token id along each row
-            token_masks = [] # contains the mask (was it sampled (1) or forced (0)?) along each row
-            for i, state in enumerate(row_states):
-                # Select the next token in this row
-                is_forced = len(state.forced_tokens) > 0 # are there tokens waiting to be forced in deque?
-                token_masks.append(0 if is_forced else 1) # mask is 0 if forced, 1 if sampled
-                next_token = state.forced_tokens.popleft() if is_forced else sampled_tokens[i]
-                token_column.append(next_token)
-                # Update the state of this row to include the next token
-                state.current_tokens.append(next_token)
-                # On <|assistant_end|> or <|bos|>, mark the row as completed
-                if next_token == assistant_end or next_token == bos:
-                    state.completed = True
-                # Handle tool logic
-                if next_token == python_start:
-                    state.in_python_block = True
-                    state.python_expr_tokens = []
-                elif next_token == python_end and state.in_python_block:
-                    state.in_python_block = False
-                    if state.python_expr_tokens:
-                        expr = self.tokenizer.decode(state.python_expr_tokens)
-                        result = use_calculator(expr)
-                        if result is not None:
-                            result_tokens = self.tokenizer.encode(str(result))
-                            state.forced_tokens.append(output_start)
-                            state.forced_tokens.extend(result_tokens)
-                            state.forced_tokens.append(output_end)
-                    state.python_expr_tokens = []
-                elif state.in_python_block:
-                    state.python_expr_tokens.append(next_token)
-
-            # Yield the token column
-            yield token_column, token_masks
-            num_generated += 1
-            # Prepare ids for next iteration
-            ids = torch.tensor(token_column, dtype=torch.long, device=device).unsqueeze(1)
+                # 使用我们已经从预填充中采样的token
+                sampled
 
     def generate_batch(self, tokens, num_samples=1, **kwargs):
         """
-        Non-streaming batch generation that just returns the final token sequences.
-        Returns a list of token sequences (list of lists of ints).
-        Terminal tokens (assistant_end, bos) are not included in the results.
+        非流式批次生成，只返回最终的token序列。
+        返回token序列列表（整数列表的列表）。
+        终端token（assistant_end、bos）不包含在结果中。
         """
         assistant_end = self.tokenizer.encode_special("<|assistant_end|>")
         bos = self.tokenizer.get_bos_token_id()
@@ -285,7 +238,7 @@ class Engine:
                     else:
                         results[i].append(token)
                         masks[i].append(mask)
-            # Stop if all rows are completed
+            # 如果所有行都完成则停止
             if all(completed):
                 break
         return results, masks
@@ -293,20 +246,20 @@ class Engine:
 
 if __name__ == "__main__":
     """
-    Quick inline test to make sure that the naive/slow model.generate function
-    is equivalent to the faster Engine.generate function here.
+    快速内联测试以确保naive/slow的model.generate函数
+    与此处更快的Engine.generate函数等效。
     """
     import time
-    # init compute
+    # 初始化计算
     ddp, ddp_rank, ddp_local_rank, ddp_world_size, device = compute_init()
-    # load the model and tokenizer
+    # 加载模型和分词器
     model, tokenizer, meta = load_model("base", device, phase="eval")
     bos_token_id = tokenizer.get_bos_token_id()
-    # common hyperparameters
+    # 通用超参数
     kwargs = dict(max_tokens=64, temperature=0.0)
-    # set the starting prompt
+    # 设置起始提示
     prompt_tokens = tokenizer.encode("The chemical formula of water is", prepend=bos_token_id)
-    # generate the reference sequence using the model.generate() function
+    # 使用model.generate()函数生成参考序列
     generated_tokens = []
     torch.cuda.synchronize()
     t0 = time.time()
@@ -318,26 +271,26 @@ if __name__ == "__main__":
     print()
     torch.cuda.synchronize()
     t1 = time.time()
-    print(f"Reference time: {t1 - t0:.2f}s")
+    print(f"参考时间: {t1 - t0:.2f}s")
     reference_ids = generated_tokens
-    # generate tokens with Engine
+    # 使用Engine生成token
     generated_tokens = []
     engine = Engine(model, tokenizer)
-    stream = engine.generate(prompt_tokens, num_samples=1, **kwargs) # note: runs in fp32
+    stream = engine.generate(prompt_tokens, num_samples=1, **kwargs) # 注意：在fp32中运行
     torch.cuda.synchronize()
     t0 = time.time()
     for token_column, token_masks in stream:
-        token = token_column[0] # only print out the first row
+        token = token_column[0] # 只打印第一行
         generated_tokens.append(token)
         chunk = tokenizer.decode([token])
         print(chunk, end="", flush=True)
     print()
     torch.cuda.synchronize()
     t1 = time.time()
-    print(f"Engine time: {t1 - t0:.2f}s")
-    # compare the two sequences
+    print(f"引擎时间: {t1 - t0:.2f}s")
+    # 比较两个序列
     for i in range(len(reference_ids)):
         if reference_ids[i] != generated_tokens[i]:
-            print(f"Mismatch at {i}: {reference_ids[i]} != {generated_tokens[i]}")
+            print(f"在{i}处不匹配: {reference_ids[i]} != {generated_tokens[i]}")
             break
-    print(f"Match: {reference_ids == generated_tokens}")
+    print(f"匹配: {reference_ids == generated_tokens}")

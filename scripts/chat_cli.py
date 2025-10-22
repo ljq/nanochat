@@ -1,7 +1,7 @@
 """
-New and upgraded chat mode because a lot of the code has changed since the last one.
+新的和升级的聊天模式，因为自上一个版本以来很多代码已经改变。
 
-Intended to be run single GPU only atm:
+目前仅设计为在单个GPU上运行：
 python -m scripts.chat_cli -i mid
 """
 import argparse
@@ -10,32 +10,32 @@ from nanochat.common import compute_init
 from nanochat.engine import Engine
 from nanochat.checkpoint_manager import load_model
 
-parser = argparse.ArgumentParser(description='Chat with the model')
-parser.add_argument('-i', '--source', type=str, default="sft", help="Source of the model: sft|mid|rl")
-parser.add_argument('-g', '--model-tag', type=str, default=None, help='Model tag to load')
-parser.add_argument('-s', '--step', type=int, default=None, help='Step to load')
-parser.add_argument('-p', '--prompt', type=str, default='', help='Prompt the model, get a single response back')
-parser.add_argument('-t', '--temperature', type=float, default=0.6, help='Temperature for generation')
-parser.add_argument('-k', '--top-k', type=int, default=50, help='Top-k sampling parameter')
+parser = argparse.ArgumentParser(description='与模型聊天')
+parser.add_argument('-i', '--source', type=str, default="sft", help="模型来源: sft|mid|rl")
+parser.add_argument('-g', '--model-tag', type=str, default=None, help='要加载的模型标签')
+parser.add_argument('-s', '--step', type=int, default=None, help='要加载的步骤')
+parser.add_argument('-p', '--prompt', type=str, default='', help='提示模型，获取单个响应')
+parser.add_argument('-t', '--temperature', type=float, default=0.6, help='生成的温度')
+parser.add_argument('-k', '--top-k', type=int, default=50, help='Top-k采样参数')
 args = parser.parse_args()
 
-# Init the model and tokenizer
+# 初始化模型和分词器
 ddp, ddp_rank, ddp_local_rank, ddp_world_size, device = compute_init()
 autocast_ctx = torch.amp.autocast(device_type="cuda", dtype=torch.bfloat16)
 model, tokenizer, meta = load_model(args.source, device, phase="eval", model_tag=args.model_tag, step=args.step)
 
-# Special tokens for the chat state machine
+# 聊天状态机的特殊token
 bos = tokenizer.get_bos_token_id()
 user_start, user_end = tokenizer.encode_special("<|user_start|>"), tokenizer.encode_special("<|user_end|>")
 assistant_start, assistant_end = tokenizer.encode_special("<|assistant_start|>"), tokenizer.encode_special("<|assistant_end|>")
 
-# Create Engine for efficient generation
+# 创建Engine以进行高效生成
 engine = Engine(model, tokenizer)
 
-print("\nNanoChat Interactive Mode")
+print("\nNanoChat交互模式")
 print("-" * 50)
-print("Type 'quit' or 'exit' to end the conversation")
-print("Type 'clear' to start a new conversation")
+print("输入'quit'或'exit'结束对话")
+print("输入'clear'开始新对话")
 print("-" * 50)
 
 conversation_tokens = [bos]
@@ -43,35 +43,35 @@ conversation_tokens = [bos]
 while True:
 
     if args.prompt:
-        # Get the prompt from the launch command
+        # 从启动命令获取提示
         user_input = args.prompt
     else:
-        # Get the prompt interactively from the console
+        # 从控制台交互式获取提示
         try:
-            user_input = input("\nUser: ").strip()
+            user_input = input("\n用户: ").strip()
         except (EOFError, KeyboardInterrupt):
-            print("\nGoodbye!")
+            print("\n再见！")
             break
 
-    # Handle special commands
+    # 处理特殊命令
     if user_input.lower() in ['quit', 'exit']:
-        print("Goodbye!")
+        print("再见！")
         break
 
     if user_input.lower() == 'clear':
         conversation_tokens = [bos]
-        print("Conversation cleared.")
+        print("对话已清除。")
         continue
 
     if not user_input:
         continue
 
-    # Add User message to the conversation
+    # 将用户消息添加到对话
     conversation_tokens.append(user_start)
     conversation_tokens.extend(tokenizer.encode(user_input))
     conversation_tokens.append(user_end)
 
-    # Kick off the assistant
+    # 启动助手
     conversation_tokens.append(assistant_start)
     generate_kwargs = {
         "num_samples": 1,
@@ -80,20 +80,20 @@ while True:
         "top_k": args.top_k,
     }
     response_tokens = []
-    print("\nAssistant: ", end="", flush=True)
+    print("\n助手: ", end="", flush=True)
     with autocast_ctx:
         for token_column, token_masks in engine.generate(conversation_tokens, **generate_kwargs):
-            token = token_column[0] # pop the batch dimension (num_samples=1)
+            token = token_column[0] # 弹出批次维度（num_samples=1）
             response_tokens.append(token)
             token_text = tokenizer.decode([token])
             print(token_text, end="", flush=True)
     print()
-    # we have to ensure that the assistant end token is the last token
-    # so even if generation ends due to max tokens, we have to append it to the end
+    # 我们必须确保助手结束token是最后一个token
+    # 所以即使生成因最大token数而结束，我们也必须将其附加到末尾
     if response_tokens[-1] != assistant_end:
         response_tokens.append(assistant_end)
     conversation_tokens.extend(response_tokens)
 
-    # In the prompt mode, we only want a single response and exit
+    # 在提示模式下，我们只想要单个响应并退出
     if args.prompt:
         break

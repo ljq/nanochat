@@ -201,7 +201,7 @@ print(f"GPT-4: {vocab_sizes['gpt4']}")
 print(f"Ours: {vocab_sizes['ours']}")
 
 def print_comparison(baseline_name, baseline_results, ours_results, all_text):
-    """Print comparison table between baseline tokenizer and ours."""
+    """打印基线分词器与我们分词器的比较表格。"""
     print(f"\nComparison with {baseline_name}:")
     print("=" * 95)
     print(f"{'Text Type':<10} {'Bytes':<8} {baseline_name:<15} {'Ours':<15} {'Relative':<12} {'Better':<10}")

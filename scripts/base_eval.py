@@ -1,13 +1,13 @@
 """
-Evlauate the CORE metric for a given model.
+评估给定模型的CORE指标。
 
-Run on a single GPU:
+在单个GPU上运行：
 python base_eval.py
 
-Run with torchrun on e.g. 8 GPUs:
+使用torchrun在例如8个GPU上运行：
 torchrun --nproc_per_node=8 base_eval.py
 
-The script will print the CORE metric to the console.
+脚本将在控制台打印CORE指标。
 """
 import os
 import sys
@@ -29,11 +29,11 @@ from nanochat.core_eval import evaluate_task
 
 def evaluate_model(model, tokenizer, device, max_per_task=-1):
     """
-    Evaluate a base model on the CORE benchmark.
-    - max_per_task: crop the data to this many examples per task for testing (-1 = disable)
-    TODO: clean up this function, delete the need for all the files, for pandas dependency, etc.
+    在CORE基准测试上评估基础模型。
+    - max_per_task: 为测试将每个任务的数据裁剪为此数量的示例（-1 = 禁用）
+    TODO: 清理此函数，删除对所有文件的需求，删除pandas依赖等。
     """
-    # Load config and task metadata
+    # 加载配置和任务元数据
     base_dir = get_base_dir()
     eval_bundle_dir = os.path.join(base_dir, "eval_bundle")
     config_path = os.path.join(eval_bundle_dir, "core.yaml")
@@ -44,7 +44,7 @@ def evaluate_model(model, tokenizer, device, max_per_task=-1):
     tasks = config['icl_tasks']
     eval_metadata = pd.read_csv(eval_meta_data)
 
-    # Evaluate each task
+    # 评估每个任务
     results = {}
     centered_results = {}
     for task in tasks:
@@ -56,21 +56,21 @@ def evaluate_model(model, tokenizer, device, max_per_task=-1):
             'num_fewshot': task['num_fewshot'][0],
             'continuation_delimiter': task.get('continuation_delimiter', ' ')
         }
-        print0(f"Evaluating: {label} ({task_meta['num_fewshot']}-shot, type: {task_meta['task_type']})... ", end='')
+        print0(f"评估: {label} ({task_meta['num_fewshot']}-shot, 类型: {task_meta['task_type']})... ", end='')
 
-        # Load data for this task
+        # 加载此任务的数据
         data_path = os.path.join(data_base_path, task_meta['dataset_uri'])
         with open(data_path, 'r') as f:
             data = [json.loads(line.strip()) for line in f]
 
-        # shuffle the data because in many cases it appears ordered but we want
-        # the abillity to only run a subset of the data for debugging purposes etc.
+        # 洗牌数据，因为在许多情况下它看起来是有序的，但我们希望
+        # 能够只运行数据的子集以进行调试等目的。
         shuffle_rng = random.Random(1337)
         shuffle_rng.shuffle(data)
         if max_per_task > 0:
             data = data[:max_per_task]
 
-        # run the evaluation for this task
+        # 运行此任务的评估
         accuracy = evaluate_task(model, tokenizer, data, device, task_meta)
 
         results[label] = accuracy
@@ -79,7 +79,7 @@ def evaluate_model(model, tokenizer, device, max_per_task=-1):
         centered_result = (accuracy - 0.01 * random_baseline) / (1.0 - 0.01 * random_baseline)
         centered_results[label] = centered_result
         end_time = time.time()
-        print0(f"accuracy: {accuracy:.4f} | centered: {centered_result:.4f} | time: {end_time - start_time:.2f}s")
+        print0(f"准确率: {accuracy:.4f} | 中心化: {centered_result:.4f} | 时间: {end_time - start_time:.2f}s")
 
     core_metric = sum(centered_results.values()) / len(centered_results)
     out = {
@@ -93,7 +93,7 @@ def evaluate_model(model, tokenizer, device, max_per_task=-1):
 # HuggingFace loading utilities and light wrappers for a model
 
 class ModelWrapper:
-    """Lightweight wrapper for a HuggingFace model"""
+    """HuggingFace模型的轻量级包装器"""
     def __init__(self, model, max_seq_len=None):
         self.model = model
         self.max_seq_len = max_seq_len
@@ -104,45 +104,45 @@ class ModelWrapper:
         return logits
 
 def load_hf_model(hf_path: str, device):
-    print0(f"Loading model from: {hf_path}")
-    # Load the model
+    print0(f"从以下位置加载模型: {hf_path}")
+    # 加载模型
     from transformers import AutoModelForCausalLM
     model = AutoModelForCausalLM.from_pretrained(hf_path)
     model.to(device)
     model.eval()
     max_seq_len = 1024 if "openai-community/gpt2" in hf_path else None
     model = ModelWrapper(model, max_seq_len=max_seq_len)
-    # Load the tokenizer
+    # 加载分词器
     tokenizer = HuggingFaceTokenizer.from_pretrained(hf_path)
     return model, tokenizer
 
 # -----------------------------------------------------------------------------
 def main():
-    assert len(sys.argv) in [1, 2], "Usage: python base_eval.py [hf_path]"
+    assert len(sys.argv) in [1, 2], "用法: python base_eval.py [hf_path]"
 
-    # distributed / precision setup
+    # 分布式/精度设置
     ddp, ddp_rank, ddp_local_rank, ddp_world_size, device = compute_init()
     autocast_ctx = torch.amp.autocast(device_type="cuda", dtype=torch.bfloat16)
 
-    # Load model and tokenizer from command line or from file system
+    # 从命令行或文件系统加载模型和分词器
     if len(sys.argv) >= 2:
-        # atm assume that if a path is given, it's a huggingface model path
+        # 目前假设如果给出路径，它是huggingface模型路径
         hf_path = sys.argv[1]
-        print0(f"Loading huggingface model from: {hf_path}")
+        print0(f"从以下位置加载huggingface模型: {hf_path}")
         model, tokenizer = load_hf_model(hf_path, device)
-        model_name = hf_path # just for logging
-        model_slug = hf_path.replace("/", "-") # for the output csv file
+        model_name = hf_path # 仅用于日志记录
+        model_slug = hf_path.replace("/", "-") # 用于输出csv文件
     else:
-        # load a local model from the file system
+        # 从文件系统加载本地模型
         model, tokenizer, meta = load_model("base", device, phase="eval")
-        model_name = f"base_model (step {meta['step']})" # just for logging
-        model_slug = f"base_model_{meta['step']:06d}" # for the output csv file
+        model_name = f"base_model (步骤 {meta['step']})" # 仅用于日志记录
+        model_slug = f"base_model_{meta['step']:06d}" # 用于输出csv文件
 
-    # Evaluate the model
+    # 评估模型
     with autocast_ctx:
         out = evaluate_model(model, tokenizer, device)
 
-    # Write out the results to a csv file
+    # 将结果写入csv文件
     core_metric = None
     centered_results = {}
     if ddp_rank == 0:
@@ -153,25 +153,25 @@ def main():
         centered_results = out["centered_results"]
         core_metric = out["core_metric"]
         with open(output_csv_path, 'w') as f:
-            f.write(f"{'Task':<35}, {'Accuracy':<10}, {'Centered':<10}\n")
+            f.write(f"{'任务':<35}, {'准确率':<10}, {'中心化':<10}\n")
             for label in results:
                 f.write(f"{label:<35}, {results[label]:<10.6f}, {centered_results[label]:<10.6f}\n")
             f.write(f"{'CORE':<35}, {'':<10}, {core_metric:<10.6f}\n")
-        # Print the content of the csv file to console too
+        # 也将csv文件的内容打印到控制台
         print0("="*80)
-        print0(f"Model: {model_name}")
+        print0(f"模型: {model_name}")
         print0("="*80)
         with open(output_csv_path, 'r') as f:
             print0(f.read())
 
-    # Log to report
+    # 记录到报告
     from nanochat.report import get_report
-    get_report().log(section="Base model evaluation", data=[
+    get_report().log(section="基础模型评估", data=[
         {
-            "Model": model_name,
-            "CORE metric": core_metric,
+            "模型": model_name,
+            "CORE指标": core_metric,
         },
-        centered_results, # the full table
+        centered_results, # 完整表格
     ])
 
     compute_cleanup()

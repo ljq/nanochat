@@ -1,19 +1,18 @@
 """
-Base class for all Tasks.
-A Task is basically a dataset of conversations, together with some
-metadata and often also evaluation criteria.
-Example tasks: MMLU, ARC-Easy, ARC-Challenge, GSM8K, HumanEval, SmolTalk.
+所有任务的基础类。
+任务基本上是一个对话数据集，带有一些元数据，通常还有评估标准。
+示例任务：MMLU、ARC-Easy、ARC-Challenge、GSM8K、HumanEval、SmolTalk。
 """
 
 import random
 
 class Task:
     """
-    Base class of a Task. Allows for lightweight slicing of the underlying dataset.
+    任务的基础类。允许对底层数据集进行轻量级切片。
     """
 
     def __init__(self, start=0, stop=None, step=1):
-        # allows a lightweight logical view over a dataset
+        # 允许对数据集进行轻量级逻辑视图
         assert start >= 0, f"Start must be non-negative, got {start}"
         assert stop is None or stop >= start, f"Stop should be greater than or equal to start, got {stop} and {start}"
         assert step >= 1, f"Step must be strictly positive, got {step}"
@@ -23,7 +22,7 @@ class Task:
 
     @property
     def eval_type(self):
-        # one of 'generative' | 'categorical'
+        # 'generative' | 'categorical' 之一
         raise NotImplementedError
 
     def num_examples(self):
@@ -38,7 +37,7 @@ class Task:
         step = self.step
         span = stop - start
         num = (span + step - 1) // step # ceil_div(span, step)
-        assert num >= 0, f"Negative number of examples???: {num}" # prevent footguns
+        assert num >= 0, f"负的示例数量？？？: {num}" # 防止误用
         return num
 
     def __getitem__(self, index: int):
@@ -53,33 +52,33 @@ class Task:
 
 class TaskMixture(Task):
     """
-    For SFT Training it becomes useful to train on a tax mixture of datasets.
-    Fun trick: if you wish to oversample any task, just pass it in multiple times in the list.
+    对于SFT训练，在数据集混合上训练变得有用。
+    有趣的技巧：如果您希望过采样任何任务，只需在列表中多次传递它。
     """
 
     def __init__(self, tasks, **kwargs):
         super().__init__(**kwargs)
-        # tasks is a list of Task objects
+        # tasks是Task对象的列表
         self.tasks = tasks
         self.lengths = [len(task) for task in self.tasks]
         self.num_conversations = sum(self.lengths)
-        # Build list of all (task_idx, local_idx) pairs
+        # 构建所有(task_idx, local_idx)对的列表
         self.index_map = []
         for task_idx, task_length in enumerate(self.lengths):
             for local_idx in range(task_length):
                 self.index_map.append((task_idx, local_idx))
-        # Deterministically shuffle to mix tasks throughout training
+        # 确定性洗牌以在整个训练中混合任务
         rng = random.Random(42)
         rng.shuffle(self.index_map)
-        # Note: this is not the most elegant or best solution, but it's ok for now
+        # 注意：这不是最优雅或最好的解决方案，但目前可以
 
     def num_examples(self):
         return self.num_conversations
 
     def get_example(self, index):
         """
-        Access conversations according to a deterministic shuffle of all examples.
-        This ensures tasks are mixed throughout training, regardless of dataset size.
+        根据所有示例的确定性洗牌访问对话。
+        这确保任务在整个训练中混合，无论数据集大小如何。
         """
         assert 0 <= index < self.num_conversations, f"Index {index} out of range for mixture with {self.num_conversations} conversations"
         task_idx, local_idx = self.index_map[index]
@@ -88,8 +87,8 @@ class TaskMixture(Task):
 
 class TaskSequence(Task):
     """
-    For SFT Training sometimes we want to sequentially train on a list of tasks.
-    This is useful for cases that require a training curriculum.
+    对于SFT训练，有时我们希望在任务列表上顺序训练。
+    这对于需要训练课程的情况很有用。
     """
 
     def __init__(self, tasks, **kwargs):
@@ -111,19 +110,16 @@ class TaskSequence(Task):
 
 def render_mc(question, letters, choices):
     """
-    The common multiple choice rendering format we will use.
+    我们将使用的常见多项选择渲染格式。
 
-    Note two important design decisions:
+    注意两个重要的设计决策：
     1)
-    Bigger models don't care as much, but smaller models prefer to have
-    the letter *after* the choice, which results in better binding.
+    更大的模型不太关心，但较小的模型更喜欢将字母*放在*选择之后，这导致更好的绑定。
     2)
-    There is no whitespace between the delimiter (=) and the letter.
-    This is actually critical because the tokenizer has different token ids
-    for " A" vs. "A". The assistant responses will be just the letter itself,
-    i.e. "A", so it is important that here in the prompt it is the exact same
-    token, i.e. "A" with no whitespace before it. Again, bigger models don't care
-    about this too much, but smaller models do care about some of these details.
+    分隔符（=）和字母之间没有空格。
+    这实际上很关键，因为分词器对" A"和"A"有不同的token id。
+    助手响应将只是字母本身，即"A"，所以重要的是在提示中它是完全相同的token，
+    即"A"前面没有空格。再次强调，更大的模型不太关心这一点，但较小的模型确实关心这些细节。
     """
     query = f"Multiple Choice question: {question}\n"
     query += "".join([f"- {choice}={letter}\n" for letter, choice in zip(letters, choices)])
@@ -132,16 +128,16 @@ def render_mc(question, letters, choices):
 
 
 if __name__ == "__main__":
-    # very lightweight test of slicing
+    # 非常轻量级的切片测试
     from tasks.mmlu import MMLU
 
     ds = MMLU(subset="auxiliary_train", split="train")
-    print("Length of MMLU: ", len(ds))
+    print("MMLU长度: ", len(ds))
     ex = ds[5]
-    print("5th example: ", ex)
+    print("第5个示例: ", ex)
 
     ds = MMLU(subset="auxiliary_train", split="train", start=5, stop=10)
-    print("Length of sliced MMLU[5:10]: ", len(ds))
-    print("0th example of sliced MMLU: ", ds[0])
+    print("切片MMLU[5:10]的长度: ", len(ds))
+    print("切片MMLU的第0个示例: ", ds[0])
 
-    print("They match: ", ex == ds[0])
+    print("它们匹配: ", ex == ds[0])

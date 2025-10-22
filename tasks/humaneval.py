@@ -10,7 +10,7 @@ from nanochat.execution import execute_code
 from tasks.common import Task
 
 def extract_imports(prompt):
-    """Extract import statements from the beginning of a code block."""
+    """从代码块开头提取import语句。"""
     imports = []
     for line in prompt.split('\n'):
         stripped = line.strip()
@@ -23,14 +23,14 @@ def extract_imports(prompt):
 
 def extract_program(completion):
     """
-    Extract Python code from LLM completion.
+    从LLM完成中提取Python代码。
 
-    Handles various output formats:
-    - Code wrapped in ```python ... ``` or ``` ... ``` blocks
-    - Plain code without markdown blocks
-    - Extra text before/after code blocks
+    处理各种输出格式：
+    - 包装在```python ... ```或``` ... ```块中的代码
+    - 没有markdown块的纯代码
+    - 代码块前后的额外文本
 
-    Returns the first code block if found, otherwise returns the whole completion.
+    如果找到代码块则返回第一个代码块，否则返回整个完成内容。
     """
     # Try to find markdown code blocks (```python or just ```)
     # Match ```python\n...\n``` or ```\n...\n```

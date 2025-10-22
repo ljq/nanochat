@@ -9,23 +9,23 @@ use ahash::{AHashMap, AHashSet};
 use compact_str::CompactString;
 use rayon::prelude::*;
 
-// Default GPT-4 style regex pattern for splitting text
+// 默认的GPT-4风格正则表达式模式，用于分割文本
 const GPT4_PATTERN: &str = r"'(?i:[sdmt]|ll|ve|re)|[^\r\n\p{L}\p{N}]?+\p{L}+|\p{N}{1,3}| ?[^\s\p{L}\p{N}]++[\r\n]*|\s*[\r\n]|\s+(?!\S)|\s+";
 
 type Pair = (u32, u32);
 
-/// A Byte Pair Encoding tokenizer that matches the GPT-4 style implementation
+/// 一个字节对编码分词器，匹配GPT-4风格的实现
 #[pyclass]
 pub struct Tokenizer {
-    /// Maps pairs of token IDs to their merged token ID
+    /// 将token ID对映射到它们合并后的token ID
     pub merges: StdHashMap<Pair, u32>,
-    /// The regex pattern used for text splitting
+    /// 用于文本分割的正则表达式模式
     pub pattern: String,
-    /// Compiled regex for efficiency
+    /// 编译后的正则表达式，用于提高效率
     compiled_pattern: Regex,
 }
 
-// ------------------------ internal helpers ------------------------
+// ------------------------ 内部辅助函数 ------------------------
 
 #[derive(Clone, Debug)]
 struct Word {
@@ -43,11 +43,11 @@ impl Word {
         self.ids.windows(2).map(|w| (w[0], w[1]))
     }
 
-    /// Merge all non-overlapping occurrences of pair -> new_id.
-    /// Returns a small Vec of local pair-count deltas for THIS word only:
-    ///   -1 for removed pairs, +1 for newly created pairs.
+    /// 合并所有非重叠出现的pair -> new_id。
+    /// 返回仅针对此单词的本地对计数增量的小Vec：
+    ///   -1 表示移除的对，+1 表示新创建的对。
     ///
-    /// NOTE: this version deliberately avoids a HashMap in the hot loop.
+    /// 注意：此版本故意避免在热循环中使用HashMap。
     fn merge_pair(&mut self, pair: Pair, new_id: u32) -> Vec<(Pair, i32)> {
         let (a, b) = pair;
         let n = self.ids.len();
@@ -93,7 +93,7 @@ impl Word {
 struct MergeJob {
     pair: Pair,
     count: u64,
-    /// set of word indices where this pair may occur and needs processing
+    /// 可能发生此对并需要处理的单词索引集合
     pos: AHashSet<usize>,
 }
 
@@ -111,11 +111,11 @@ impl PartialOrd for MergeJob {
 
 impl Ord for MergeJob {
     fn cmp(&self, other: &Self) -> Ordering {
-        // Max-heap by count; tie-break to ascending pair order (deterministic)
+        // 按计数最大堆；平局时按升序对顺序（确定性）
         if self.count != other.count {
             self.count.cmp(&other.count)
         } else {
-            // ascending order on the pair when counts tie
+            // 计数相同时对按升序排序
             other.pair.cmp(&self.pair)
         }
     }
@@ -126,6 +126,7 @@ fn count_pairs_parallel(
     words: &[Word],
     counts: &[i32],
 ) -> (AHashMap<Pair, i32>, AHashMap<Pair, AHashSet<usize>>) {
+    /// 并行计算所有单词中的对计数和位置信息
     words
         .par_iter()
         .enumerate()
@@ -154,25 +155,25 @@ fn count_pairs_parallel(
         )
 }
 
-// ------------------------ END helpers ------------------------
+// ------------------------ 辅助函数结束 ------------------------
 
 impl Tokenizer {
 
-    /// Core incremental BPE training given unique words and their counts.
-    /// `words`: one entry per unique chunk (Vec<u32> of token-ids/bytes).
-    /// `counts`: same length as `words`, count per chunk.
+    /// 给定唯一单词及其计数的核心增量BPE训练。
+    /// `words`: 每个唯一块一个条目（token-id/字节的Vec<u32>）。
+    /// `counts`: 与`words`长度相同，每个块的计数。
     fn train_core_incremental(&mut self, mut words: Vec<Word>, counts: Vec<i32>, vocab_size: u32) {
-        assert!(vocab_size >= 256, "vocab_size must be at least 256");
+        assert!(vocab_size >= 256, "vocab_size必须至少为256");
         let num_merges = vocab_size - 256;
-        log::info!("Starting BPE training: {} merges to compute", num_merges);
+        log::info!("开始BPE训练：需要计算{}次合并", num_merges);
         self.merges.clear();
 
-        // ---- Initial pair_counts and where_to_update (parallel) ----
-        log::info!("Computing initial pair counts from {} unique sequences", words.len());
+        // ---- 初始对计数和更新位置（并行） ----
+        log::info!("从{}个唯一序列计算初始对计数", words.len());
         let (mut pair_counts, mut where_to_update) = count_pairs_parallel(&words, &counts);
 
-        // ---- Build heap ----
-        log::info!("Building heap with {} unique pairs", pair_counts.len());
+        // ---- 构建堆 ----
+        log::info!("构建堆，包含{}个唯一对", pair_counts.len());
         let mut heap = OctonaryHeap::with_capacity(pair_counts.len());
         for (pair, pos) in where_to_update.drain() {
             let c = *pair_counts.get(&pair).unwrap_or(&0);
@@ -185,15 +186,15 @@ impl Tokenizer {
             }
         }
 
-        // ---- Merge loop ----
-        log::info!("Starting merge loop");
+        // ---- 合并循环 ----
+        log::info!("开始合并循环");
         let mut merges_done = 0u32;
         let mut last_log_percent = 0u32;
 
         while merges_done < num_merges {
             let Some(mut top) = heap.pop() else { break; };
 
-            // Lazy refresh
+            // 延迟刷新
             let current = *pair_counts.get(&top.pair).unwrap_or(&0);
             if top.count != current as u64 {
                 top.count = current as u64;
@@ -206,16 +207,16 @@ impl Tokenizer {
                 break;
             }
 
-            // Record merge
+            // 记录合并
             let new_id = 256 + merges_done;
             self.merges.insert(top.pair, new_id);
 
-            // Merge this pair in all words where it occurs
+            // 在所有出现此对的单词中合并
             let mut local_pos_updates: AHashMap<Pair, AHashSet<usize>> = AHashMap::new();
             for &word_idx in &top.pos {
-                // Apply merge to this word and collect pair-count deltas
+                // 对此单词应用合并并收集对计数增量
                 let changes = words[word_idx].merge_pair(top.pair, new_id);
-                // Update global pair counts based on this word's count
+                // 基于此单词的计数更新全局对计数
                 for (pair, delta) in changes {
                     let delta_total = delta * counts[word_idx];
                     if delta_total != 0 {
@@ -227,7 +228,7 @@ impl Tokenizer {
                 }
             }
 
-            // Add the updated pair counts back to the heap
+            // 将更新的对计数添加回堆中
             for (pair, pos) in local_pos_updates {
                 let cnt = *pair_counts.get(&pair).unwrap_or(&0);
                 if cnt > 0 {
@@ -241,25 +242,25 @@ impl Tokenizer {
 
             merges_done += 1;
 
-            // Log progress every 1%
+            // 每1%记录进度
             let current_percent = (merges_done * 100) / num_merges;
             if current_percent > last_log_percent {
                 log::info!(
-                    "Progress: {}% ({}/{} merges) - Last merge: {:?} -> {} (frequency: {})",
+                    "进度: {}% ({}/{} 次合并) - 最后一次合并: {:?} -> {} (频率: {})",
                     current_percent, merges_done, num_merges, top.pair, new_id, top.count
                 );
                 last_log_percent = current_percent;
             }
         }
 
-        log::info!("Finished training: {} merges completed", merges_done);
+        log::info!("训练完成：完成了{}次合并", merges_done);
     }
 }
 
-/// Public methods for the Tokenizer class that will be exposed to Python.
+/// 将暴露给Python的Tokenizer类的公共方法。
 #[pymethods]
 impl Tokenizer {
-    /// Create a new Tokenizer
+    /// 创建一个新的Tokenizer
     #[new]
     pub fn new() -> Self {
         Self {
@@ -269,9 +270,9 @@ impl Tokenizer {
         }
     }
 
-    /// Train from a streaming iterator (parallel ingestion).
-    /// We refill a Rust Vec<String> buffer under the GIL, then release the GIL
-    /// to do the heavy splitting and counting **in parallel** with rayon.
+    /// 从流式迭代器训练（并行摄取）。
+    /// 我们在GIL下重新填充Rust Vec<String>缓冲区，然后释放GIL
+    /// 以使用rayon**并行**进行繁重的分割和计数。
     #[pyo3(signature = (iterator, vocab_size, buffer_size=8192, pattern=None))]
     #[pyo3(text_signature = "(self, iterator, vocab_size, buffer_size=8192, pattern=None)")]
     pub fn train_from_iterator(
@@ -282,30 +283,30 @@ impl Tokenizer {
         buffer_size: usize,
         pattern: Option<String>,
     ) -> PyResult<()> {
-        // Use provided pattern or default to GPT-4 pattern
+        // 使用提供的模式或默认为GPT-4模式
         let pattern_str = pattern.unwrap_or_else(|| GPT4_PATTERN.to_string());
 
-        // Update the stored pattern and compile it
+        // 更新存储的模式并编译它
         self.pattern = pattern_str.clone();
         self.compiled_pattern = Regex::new(&pattern_str)
-            .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("Invalid regex pattern: {}", e)))?;
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("无效的正则表达式模式: {}", e)))?;
 
-        // Prepare a true Python iterator object
+        // 准备一个真正的Python迭代器对象
         let py_iter: pyo3::Py<pyo3::PyAny> = unsafe {
             pyo3::Py::from_owned_ptr_or_err(py, pyo3::ffi::PyObject_GetIter(iterator.as_ptr()))?
         };
 
-        // Global chunk counts
+        // 全局块计数
         let mut counts: AHashMap<CompactString, i32> = AHashMap::new();
 
-        // Temporary buffer we refill under the GIL
+        // 在GIL下重新填充的临时缓冲区
         let mut buf: Vec<String> = Vec::with_capacity(buffer_size);
 
-        log::info!("Processing sequences from iterator (buffer_size: {})", buffer_size);
+        log::info!("从迭代器处理序列（缓冲区大小: {}）", buffer_size);
         let mut total_sequences = 0u64;
 
-        // Helper: refill `buf` with up to `buffer_size` strings from the Python iterator.
-        // Returns Ok(true) if the iterator is exhausted, Ok(false) otherwise.
+        // 辅助函数：从Python迭代器重新填充`buf`，最多`buffer_size`个字符串。
+        // 如果迭代器耗尽返回Ok(true)，否则返回Ok(false)。
         let refill = |buf: &mut Vec<String>| -> PyResult<bool> {
             pyo3::Python::with_gil(|py| {
                 buf.clear();
@@ -327,7 +328,7 @@ impl Tokenizer {
                             if pyo3::PyErr::occurred(py) {
                                 return Err(pyo3::PyErr::fetch(py));
                             } else {
-                                return Ok(true); // exhausted
+                                return Ok(true); // 耗尽
                             }
                         }
                     }
@@ -335,7 +336,7 @@ impl Tokenizer {
             })
         };
 
-        // Stream ingestion loop: refill under GIL, process without GIL (parallel)
+        // 流式摄取循环：在GIL下重新填充，在没有GIL的情况下处理（并行）
         loop {
             let exhausted = refill(&mut buf)?;
             if buf.is_empty() && exhausted {
@@ -350,7 +351,7 @@ impl Tokenizer {
                     .map(|s| {
                         let mut m: AHashMap<CompactString, i32> = AHashMap::new();
                         for mat in pattern.find_iter(s) {
-                            let piece = mat.expect("regex match failed").as_str();
+                            let piece = mat.expect("正则表达式匹配失败").as_str();
                             *m.entry(CompactString::from(piece)).or_default() += 1;
                         }
                         m
@@ -366,7 +367,7 @@ impl Tokenizer {
                     )
             });
 
-            // Merge local into global (single-threaded)
+            // 将本地合并到全局（单线程）
             for (k, v) in local {
                 *counts.entry(k).or_default() += v;
             }
@@ -375,9 +376,9 @@ impl Tokenizer {
                 break;
             }
         }
-        log::info!("Processed {} sequences total, {} unique", total_sequences, counts.len());
+        log::info!("总共处理了{}个序列，{}个唯一序列", total_sequences, counts.len());
 
-        // Materialize words & counts
+        // 具体化单词和计数
         let mut words = Vec::with_capacity(counts.len());
         let mut cvec = Vec::with_capacity(counts.len());
         for (chunk, c) in counts.into_iter() {
@@ -389,23 +390,23 @@ impl Tokenizer {
         Ok(())
     }
 
-    /// Return the regex pattern
+    /// 返回正则表达式模式
     pub fn get_pattern(&self) -> String {
         self.pattern.clone()
     }
 
-    /// Return the mergeable ranks (token bytes -> token id / rank)
+    /// 返回可合并的排名（token字节 -> token id / 排名）
     pub fn get_mergeable_ranks(&self) -> Vec<(Vec<u8>, u32)> {
         let mut mergeable_ranks = Vec::new();
 
-        // Build vocabulary incrementally from low to high token IDs
+        // 从低到高token ID增量构建词汇表
         let mut token_bytes: Vec<Vec<u8>> = (0..256_u32).map(|i| vec![i as u8]).collect();
 
         for (i, bytes) in token_bytes.iter().enumerate() {
             mergeable_ranks.push((bytes.clone(), i as u32));
         }
 
-        // Sort merges by token id (so we can reconstruct bytes progressively)
+        // 按token id排序合并（以便我们可以逐步重建字节）
         let mut sorted_merges: Vec<_> = self.merges.iter().collect();
         sorted_merges.sort_by_key(|&(_, &token_id)| token_id);
 
@@ -425,20 +426,20 @@ impl Tokenizer {
         mergeable_ranks
     }
 
-    /// Encode a string into token IDs
+    /// 将字符串编码为token ID
     pub fn encode(&self, text: &str) -> Vec<u32> {
         let mut all_ids = Vec::new();
 
-        // Split text using the regex pattern
+        // 使用正则表达式模式分割文本
         for m in self.compiled_pattern.find_iter(text) {
-            let chunk = m.expect("regex match failed").as_str();
+            let chunk = m.expect("正则表达式匹配失败").as_str();
 
-            // Convert chunk to bytes then to u32 IDs
+            // 将块转换为字节然后转换为u32 ID
             let mut ids: Vec<u32> = chunk.bytes().map(|b| b as u32).collect();
 
-            // Apply merges iteratively
+            // 迭代应用合并
             while ids.len() >= 2 {
-                // Find the best pair to merge
+                // 找到要合并的最佳对
                 let mut best_pair: Option<(usize, Pair, u32)> = None;
 
                 for i in 0..ids.len() - 1 {
@@ -450,12 +451,12 @@ impl Tokenizer {
                     }
                 }
 
-                // If we found a pair to merge, apply it
+                // 如果找到要合并的对，应用它
                 if let Some((idx, _pair, new_id)) = best_pair {
                     ids[idx] = new_id;
                     ids.remove(idx + 1);
                 } else {
-                    // No more merges possible
+                    // 没有更多可能的合并
                     break;
                 }
             }

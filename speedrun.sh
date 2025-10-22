@@ -1,79 +1,78 @@
 #!/bin/bash
 
-# This script is the "Best ChatGPT clone that $100 can buy",
-# It is designed to run in ~4 hours on 8XH100 node at $3/GPU/hour.
+# 这个脚本是"100美元能买到的最好的ChatGPT克隆版"，
+# 它设计为在8XH100节点上运行约4小时，每小时3美元/GPU。
 
-# 1) Example launch (simplest):
+# 1) 最简单的启动示例：
 # bash speedrun.sh
-# 2) Example launch in a screen session (because the run takes ~4 hours):
+# 2) 在screen会话中启动示例（因为运行需要约4小时）：
 # screen -L -Logfile speedrun.log -S speedrun bash speedrun.sh
-# 3) Example launch with wandb logging, but see below for setting up wandb first:
+# 3) 使用wandb日志记录的启动示例，但请先设置wandb：
 # WANDB_RUN=speedrun screen -L -Logfile speedrun.log -S speedrun bash speedrun.sh
 
-# Default intermediate artifacts directory is in ~/.cache/nanochat
+# 默认中间产物目录在 ~/.cache/nanochat
 export OMP_NUM_THREADS=1
 export NANOCHAT_BASE_DIR="$HOME/.cache/nanochat"
 mkdir -p $NANOCHAT_BASE_DIR
 
 # -----------------------------------------------------------------------------
-# Python venv setup with uv
+# 使用uv设置Python虚拟环境
 
-# install uv (if not already installed)
+# 安装uv（如果尚未安装）
 command -v uv &> /dev/null || curl -LsSf https://astral.sh/uv/install.sh | sh
-# create a .venv local virtual environment (if it doesn't exist)
+# 创建本地虚拟环境.venv（如果不存在）
 [ -d ".venv" ] || uv venv
-# install the repo dependencies
+# 安装仓库依赖
 uv sync
-# activate venv so that `python` uses the project's venv instead of system python
+# 激活虚拟环境，使`python`使用项目的虚拟环境而不是系统python
 source .venv/bin/activate
 
 # -----------------------------------------------------------------------------
-# wandb setup
-# If you wish to use wandb for logging (it's nice!, recommended).
-# 1) Make sure to first log in to wandb, e.g. run:
+# wandb设置
+# 如果您希望使用wandb进行日志记录（很好！推荐）。
+# 1) 确保首先登录wandb，例如运行：
 #    `wandb login`
-# 2) Set the WANDB_RUN environment variable when running this script, e.g.:
+# 2) 运行此脚本时设置WANDB_RUN环境变量，例如：
 #    `WANDB_RUN=d26 bash speedrun.sh`
 if [ -z "$WANDB_RUN" ]; then
-    # by default use "dummy" : it's handled as a special case, skips logging to wandb
+    # 默认使用"dummy"：它作为特殊情况处理，跳过记录到wandb
     WANDB_RUN=dummy
 fi
 
 # -----------------------------------------------------------------------------
-# During the course of the run, we will be writing markdown reports to the report/
-# directory in the base dir. This command clears it out and writes a header section
-# with a bunch of system info and a timestamp that marks the start of the run.
+# 在运行过程中，我们将把markdown报告写入基础目录中的report/目录。
+# 此命令清除它并写入一个头部部分，包含一堆系统信息和标记运行开始的时间戳。
 python -m nanochat.report reset
 
 # -----------------------------------------------------------------------------
-# Tokenizer
+# 分词器
 
-# Install Rust / Cargo
+# 安装Rust / Cargo
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 source "$HOME/.cargo/env"
 
-# Build the rustbpe Tokenizer
+# 构建rustbpe分词器
 uv run maturin develop --release --manifest-path rustbpe/Cargo.toml
 
-# Download the first ~2B characters of pretraining dataset
-# look at dev/repackage_data_reference.py for details on how this data was prepared
-# each data shard is ~250M chars
-# so we download 2e9 / 250e6 = 8 data shards at this point
-# each shard is ~100MB of text (compressed), so this is about ~800MB of data on disk
+# 下载前约20亿字符的预训练数据集
+# 有关此数据准备方式的详细信息，请参阅dev/repackage_data_reference.py
+# 每个数据分片约2.5亿字符
+# 因此我们此时下载20亿 / 2.5亿 = 8个数据分片
+# 每个分片约100MB文本（压缩后），因此磁盘上约800MB数据
 python -m nanochat.dataset -n 8
-# Immediately also kick off downloading more shards in the background while tokenizer trains
-# See comment below for why 240 is the right number here
+# 在分词器训练时立即在后台启动下载更多分片
+# 请参阅下面的注释了解为什么240是正确的数字
 python -m nanochat.dataset -n 240 &
 DATASET_DOWNLOAD_PID=$!
-# train the tokenizer with vocab size 2**16 = 65536 on ~2B characters of data
+# 在约20亿字符数据上训练词汇表大小为2**16 = 65536的分词器
 python -m scripts.tok_train --max_chars=2000000000
-# evaluate the tokenizer (report compression ratio etc.)
+# 评估分词器（报告压缩比等）
 python -m scripts.tok_eval
 
 # -----------------------------------------------------------------------------
-# Base model (pretraining)
+# 基础模型（预训练）
 
-# Download the eval_bundle from s3 to evaluate CORE metric during training (~162MB)
+# 从s3下载eval_bundle以在训练期间评估CORE指标（约162MB）
 EVAL_BUNDLE_URL=https://karpathy-public.s3.us-west-2.amazonaws.com/eval_bundle.zip
 if [ ! -d "$NANOCHAT_BASE_DIR/eval_bundle" ]; then
     curl -L -o eval_bundle.zip $EVAL_BUNDLE_URL
@@ -82,52 +81,52 @@ if [ ! -d "$NANOCHAT_BASE_DIR/eval_bundle" ]; then
     mv eval_bundle $NANOCHAT_BASE_DIR
 fi
 
-# The d20 model is 561M parameters.
-# Chinchilla says #tokens = 20X #params, so we need 561e6 * 20 = 11.2B tokens.
-# Assume our tokenizer is 4.8 chars/token, this is 11.2B * 4.8 ~= 54B chars.
-# At 250M chars/shard, this is 54B / 250M ~= 216 shards needed for pretraining.
-# Round up to 240 for safety. At ~100MB/shard, this downloads ~24GB of data to disk.
-# (The total number of shards available in the entire dataset is 1822.)
-echo "Waiting for dataset download to complete..."
+# d20模型有5.61亿参数。
+# Chinchilla说#tokens = 20X #params，所以我们需要5.61e6 * 20 = 112亿token。
+# 假设我们的分词器是4.8字符/token，这是112亿 * 4.8 ≈ 540亿字符。
+# 在2.5亿字符/分片的情况下，这是540亿 / 2.5亿 ≈ 216个分片用于预训练。
+# 为安全起见向上取整到240。在约100MB/分片的情况下，这下载约24GB数据到磁盘。
+# （整个数据集中可用的分片总数为1822。）
+echo "等待数据集下载完成..."
 wait $DATASET_DOWNLOAD_PID
 
-# pretrain the d20 model
+# 预训练d20模型
 torchrun --standalone --nproc_per_node=8 -m scripts.base_train -- --depth=20 --run=$WANDB_RUN
-# evaluate the model on a larger chunk of train/val data and draw some samples
+# 在更大的训练/验证数据块上评估模型并绘制一些样本
 torchrun --standalone --nproc_per_node=8 -m scripts.base_loss
-# evaluate the model on CORE tasks
+# 在CORE任务上评估模型
 torchrun --standalone --nproc_per_node=8 -m scripts.base_eval
 
 # -----------------------------------------------------------------------------
-# Midtraining (teach the model conversation special tokens, tool use, multiple choice)
+# 中期训练（教授模型对话特殊token、工具使用、多项选择）
 
-# run midtraining and eval the model
+# 运行中期训练并评估模型
 torchrun --standalone --nproc_per_node=8 -m scripts.mid_train -- --run=$WANDB_RUN
 torchrun --standalone --nproc_per_node=8 -m scripts.chat_eval -- -i mid
 
 # -----------------------------------------------------------------------------
-# Supervised Finetuning (domain adaptation to each sequence all by itself per row)
+# 监督微调（领域适应到每个序列本身每行）
 
-# train sft and re-eval right away (should see a small bump)
+# 训练SFT并立即重新评估（应该看到小的提升）
 torchrun --standalone --nproc_per_node=8 -m scripts.chat_sft -- --run=$WANDB_RUN
 torchrun --standalone --nproc_per_node=8 -m scripts.chat_eval -- -i sft
 
-# chat with the model over CLI! Leave out the -p to chat interactively
-# python -m scripts.chat_cli -p "Why is the sky blue?"
+# 通过CLI与模型聊天！省略-p以交互式聊天
+# python -m scripts.chat_cli -p "为什么天空是蓝色的？"
 
-# even better, chat with your model over a pretty WebUI ChatGPT style
+# 更好的是，通过漂亮的WebUI ChatGPT风格与您的模型聊天
 # python -m scripts.chat_web
 
 # -----------------------------------------------------------------------------
-# Reinforcement Learning. Optional, and currently only on GSM8K
-# (optional)
+# 强化学习。可选，目前仅在GSM8K上
+# （可选）
 
-# run reinforcement learning
+# 运行强化学习
 # torchrun --standalone --nproc_per_node=8 -m scripts.chat_rl -- --run=$WANDB_RUN
-# eval the RL model only on GSM8K
+# 仅在GSM8K上评估RL模型
 # torchrun --standalone --nproc_per_node=8 -m scripts.chat_eval -- -i rl -a GSM8K
 
 # -----------------------------------------------------------------------------
-# Generate the full report by putting together all the sections
-# report.md is the output and will be copied to current directory for convenience
+# 通过将所有部分组合在一起生成完整报告
+# report.md是输出，为方便起见将复制到当前目录
 python -m nanochat.report generate

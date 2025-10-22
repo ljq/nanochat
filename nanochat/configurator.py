@@ -1,17 +1,17 @@
 """
-Poor Man's Configurator. Probably a terrible idea. Example usage:
+穷人的配置器。可能是个糟糕的主意。示例用法：
 $ python train.py config/override_file.py --batch_size=32
-this will first run config/override_file.py, then override batch_size to 32
+这将首先运行config/override_file.py，然后将batch_size覆盖为32
 
-The code in this file will be run as follows from e.g. train.py:
+这个文件中的代码将从例如train.py中按以下方式运行：
 >>> exec(open('configurator.py').read())
 
-So it's not a Python module, it's just shuttling this code away from train.py
-The code in this script then overrides the globals()
+所以这不是一个Python模块，只是将这些代码从train.py中移开
+这个脚本中的代码然后会覆盖globals()
 
-I know people are not going to love this, I just really dislike configuration
-complexity and having to prepend config. to every single variable. If someone
-comes up with a better simple Python solution I am all ears.
+我知道人们不会喜欢这个，我只是真的不喜欢配置
+复杂性以及必须在每个变量前加上config.。如果有人
+提出更好的简单Python解决方案，我洗耳恭听。
 """
 
 import os
@@ -19,38 +19,39 @@ import sys
 from ast import literal_eval
 
 def print0(s="",**kwargs):
+    """只在DDP rank 0上打印，避免重复输出"""
     ddp_rank = int(os.environ.get('RANK', 0))
     if ddp_rank == 0:
         print(s, **kwargs)
 
 for arg in sys.argv[1:]:
     if '=' not in arg:
-        # assume it's the name of a config file
+        # 假设是配置文件的名称
         assert not arg.startswith('--')
         config_file = arg
-        print0(f"Overriding config with {config_file}:")
+        print0(f"使用 {config_file} 覆盖配置:")
         with open(config_file) as f:
             print0(f.read())
         exec(open(config_file).read())
     else:
-        # assume it's a --key=value argument
+        # 假设是--key=value参数
         assert arg.startswith('--')
         key, val = arg.split('=')
         key = key[2:]
         if key in globals():
             try:
-                # attempt to eval it it (e.g. if bool, number, or etc)
+                # 尝试评估它（例如如果是布尔值、数字等）
                 attempt = literal_eval(val)
             except (SyntaxError, ValueError):
-                # if that goes wrong, just use the string
+                # 如果出错，就使用字符串
                 attempt = val
-            # ensure the types match ok
+            # 确保类型匹配
             if globals()[key] is not None:
                 attempt_type = type(attempt)
                 default_type = type(globals()[key])
-                assert attempt_type == default_type, f"Type mismatch: {attempt_type} != {default_type}"
-            # cross fingers
-            print0(f"Overriding: {key} = {attempt}")
+                assert attempt_type == default_type, f"类型不匹配: {attempt_type} != {default_type}"
+            # 祈祷一切顺利
+            print0(f"覆盖: {key} = {attempt}")
             globals()[key] = attempt
         else:
-            raise ValueError(f"Unknown config key: {key}")
+            raise ValueError(f"未知配置键: {key}")

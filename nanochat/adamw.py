@@ -1,6 +1,6 @@
 """
-Borrowed from modded-nanogpt. By Keller, @vagrawal, et al.
-Not a general optimizer! But works for our specific use.
+从modded-nanogpt借用。由Keller、@vagrawal等人开发。
+不是通用优化器！但适用于我们的特定用途。
 """
 import torch
 import torch.distributed as dist
@@ -9,16 +9,18 @@ from torch import Tensor
 
 class DistAdamW(torch.optim.Optimizer):
     """
-    Distributed AdamW optimizer.
-    In the style of ZeRO-2, i.e. sharded optimizer states and gradient reduction
+    分布式AdamW优化器。
+    采用ZeRO-2风格，即分片的优化器状态和梯度归约
     """
     def __init__(self, param_groups, lr: float = 1e-3, betas: tuple[float, float] = (0.9, 0.999), eps: float = 1e-8, weight_decay: float = 0.01):
+        """初始化分布式AdamW优化器"""
         defaults = dict(lr=lr, betas=betas, eps=eps, weight_decay=weight_decay)
         super().__init__(param_groups, defaults)
 
     @torch.compile
     @torch.no_grad()
     def step(self):
+        """执行优化步骤"""
         rank = dist.get_rank()
         world_size = dist.get_world_size()
         reduce_scatter_futures: list[torch.Future] = []
@@ -26,7 +28,7 @@ class DistAdamW(torch.optim.Optimizer):
         grad_slices = []
         for group in self.param_groups:
             params: list[Tensor] = group["params"]
-            grad = torch.empty_like(params[-1]) # TODO is this bug? seems to be over-written instantly
+            grad = torch.empty_like(params[-1]) # TODO 这是bug吗？似乎立即被覆盖了
             for base_i in range(len(params)):
                 grad = params[base_i].grad
                 rank_size = grad.shape[0] // world_size
@@ -48,7 +50,7 @@ class DistAdamW(torch.optim.Optimizer):
                 lr = group['lr'] * getattr(p, "lr_mul", 1.0)
                 state = self.state[p]
                 g_slice = grad_slices[idx]
-                # State init
+                # 状态初始化
                 if not state:
                     state['step'] = torch.tensor(0, dtype=torch.int64, device=p.device)
                     state['exp_avg'] = torch.zeros_like(p_slice)
@@ -57,17 +59,17 @@ class DistAdamW(torch.optim.Optimizer):
                 exp_avg_sq = state['exp_avg_sq']
                 state['step'] += 1
                 t = state['step']
-                # weight decay
+                # 权重衰减
                 if wd != 0:
                     eff_weight_decay = lr * wd * getattr(p, "wd_mul", 1.0)
                     p_slice.mul_(1 - eff_weight_decay)
-                # update running averages
+                # 更新运行平均值
                 exp_avg.mul_(beta1).add_(g_slice, alpha=1 - beta1)
                 exp_avg_sq.mul_(beta2).addcmul_(g_slice, g_slice, value=1 - beta2)
-                # bias corrections
+                # 偏差校正
                 bias1 = 1 - beta1 ** t
                 bias2 = 1 - beta2 ** t
-                # compute step
+                # 计算步长
                 denom = exp_avg_sq.sqrt().add_(eps)
                 step_size = lr * (torch.sqrt(bias2) / bias1)
                 update = exp_avg.div(denom).mul_(step_size)
