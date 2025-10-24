@@ -4,6 +4,9 @@
 
 # [中文翻译(含文档和代码注释)](README.zh_CN.md)
 
+# Document by DeepWiki
+[deepwiki.com/ljq/nanochat](https://deepwiki.com/ljq/nanochat)
+
 
 > The best ChatGPT that $100 can buy.（100美元能买到的最好的ChatGPT。）
 
